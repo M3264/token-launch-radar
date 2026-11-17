@@ -149,20 +149,64 @@ export function actionFor(category: string | null, capital: number, chain: strin
   return `Put ${money} to work in the main ${name} product on ${chain}, interacting with it directly rather than through an aggregator.`;
 }
 
+/** Short name for the weekly qualifying touch, one per protocol kind. */
+export function weeklyVerb(category: string | null): string {
+  const c = (category ?? "").toLowerCase();
+  if (c.includes("restak") || (c.includes("liquid") && c.includes("stak")))
+    return "restaking top-up";
+  if (c.includes("lend") || c.includes("cdp") || c.includes("collateral") || c.includes("borrow") ||
+      c.includes("uncollateralized") || c.includes("money market") || c.includes("cedefi"))
+    return "supply-and-borrow touch";
+  if (c.includes("dex") || c.includes("amm") || c.includes("liquidity manager") || c.includes("market maker"))
+    return "swap-or-liquidity touch";
+  if (c.includes("curator") || c.includes("aggregat") || c.includes("allocat") || c.includes("index") ||
+      c.includes("vault") || c.includes("manager"))
+    return "vault-deposit touch";
+  if (c.includes("bridge") || c.includes("canonical"))
+    return "bridging touch";
+  if (c.includes("perp") || c.includes("deriv") || c.includes("option") || c.includes("predict") ||
+      c.includes("synth") || c.includes("basis") || c.includes("leverag") || c.includes("future"))
+    return "hedged perp touch";
+  if (c.includes("yield") || c.includes("farm"))
+    return "stake-and-compound touch";
+  if (c.includes("stak"))
+    return "staking touch";
+  if (c.includes("stable") || c.includes("anchor") || c.includes("reserve") || c.includes("money") ||
+      c.includes("payment") || c.includes("card"))
+    return "mint-or-hold touch";
+  if (c.includes("rwa") || c.includes("real") || c.includes("estate") || c.includes("treasur") || c.includes("credit"))
+    return "position top-up";
+  if (c.includes("insur"))
+    return "coverage touch";
+  if (c.includes("nft") || c.includes("gaming") || c.includes("collect"))
+    return "mint-or-trade touch";
+  return "product touch";
+}
+
+/** Calendar date holdDays after asOf (YYYY-MM-DD); deterministic. */
+export function endDate(asOf: string, holdDays: number): string {
+  const t = Date.parse(`${asOf}T00:00:00Z`);
+  if (!Number.isFinite(t)) return `at least ${holdDays} days out`;
+  return new Date(t + holdDays * 86400000).toISOString().slice(0, 10);
+}
+
 /** Seven concrete farm steps for one protocol; each trims to 20-600 characters. */
-export function farmSteps(p: ProtocolInput): string[] {
+export function farmSteps(p: ProtocolInput, asOf = "2026-11-14"): string[] {
   const first = p.chains[0] ?? "Ethereum";
   const capital = capitalFor(p.tvl_usd);
-  const age = ageDays(p.listed_at, "2026-11-14");
+  const touch = Math.max(5, Math.round(capital / 10));
+  const age = ageDays(p.listed_at, asOf);
   const hold = holdDaysFor(age);
   const weeks = weeksFor(hold);
+  const verb = weeklyVerb(p.category);
+  const end = endDate(asOf, hold);
   return [
     `Open a fresh wallet used only for ${p.name} on ${first}; back up the seed phrase offline and never mix it with other farms.`,
     `Fund it with ${moneyStr(capital)} for the position plus ${gasFor(first)} ${first} gas for fees, in a single transfer from an exchange.`,
     actionFor(p.category, capital, first, p.name),
-    `Repeat the qualifying action once a week for ${weeks} weeks so the wallet shows steady organic use, not one farmed burst.`,
-    `Leave the position working for at least ${hold} days; avoid early withdrawals since age and consistency are what a snapshot rewards.`,
-    `Check the official ${p.name} points or rewards page weekly with the farming wallet connected and confirm your balance accrues.`,
+    `Work a ${weeks}-week rotation on ${first}, one touch per week on different weekdays: (a) repeat the qualifying ${verb} above, (b) add a small about $${touch} top-up or swap, (c) open the points page with the farming wallet — then cycle.`,
+    `Leave the position working until at least ${end} (${hold} days from the ${asOf} snapshot); avoid early withdrawals since age and consistency are what a snapshot rewards.`,
+    `Every Monday, check the official ${p.name} points or rewards page with the farming wallet connected and confirm your balance accrues.`,
     `Log every deposit, transaction hash and weekly check in a farm journal with screenshots so you can claim fast if a token is announced.`,
   ];
 }

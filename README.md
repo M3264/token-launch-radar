@@ -4,6 +4,8 @@
 
 # Token Launch Radar
 
+Bounty page: https://make.fun/bounty/token-radar-01
+
 Ranks every pre-token protocol in the sealed snapshot by an implied value derived from its own TVL, 7-day growth, age with no token, chain spread and deposit velocity — each row carrying a concrete 7-step farm plan with costs and holding times.
 
 ## Run it

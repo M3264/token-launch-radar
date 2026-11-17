@@ -100,7 +100,7 @@ for (const p of picked.values()) {
       efficiency: m.efficiency,
     },
     age: m.ageDays,
-    steps: farmSteps(p),
+    steps: farmSteps(p, asOf),
   });
 }
 

@@ -126,10 +126,12 @@
       var val = v < 0 ? "—" : usd(v) + '<span class="bar" style="width:' + w + 'px"></span>';
       var badge = state.tab === "pre"
         ? '<span class="badge pre">pre-token</span>' : '<span class="badge live">live</span>';
+      var rankCell = r.rank != null && r.rank <= 3 && state.tab === "pre"
+        ? '<span class="medal m' + r.rank + '">' + r.rank + "</span>" : (r.rank || "—");
       return '<tr data-slug="' + esc(r.slug) + '"' + (state.open === r.slug ? ' class="sel"' : "") + ">" +
-        "<td>" + (r.rank || "—") + "</td>" +
+        "<td>" + rankCell + "</td>" +
         '<td><span class="name">' + esc(r.name) + '</span><br><span class="slug">' + esc(r.slug) +
-        " · " + esc(r.category || "Uncategorized") + "</span></td>" +
+        '</span> <span class="catchip">' + esc(r.category || "Uncategorized") + "</span></td>" +
         "<td>" + usd(r.tvl_usd) + "</td><td>" + pct(r.change_7d) + "</td><td>" + age(r.age_days) + "</td>" +
         "<td>" + val + "</td><td>" + badge + "</td></tr>";
     }).join("");
@@ -140,6 +142,9 @@
       };
     });
     $("empty").hidden = list.length > 0;
+    var cnt = $("count");
+    if (cnt) cnt.textContent = "showing " + shown.length + " of " + list.length +
+      " protocols" + (state.tab === "pre" ? " · click a row for its model inputs and farm plan" : "");
     renderDrawer();
     writeHash();
   }
@@ -161,8 +166,13 @@
       var ok = again === r.implied_value_usd;
       mid = '<div class="match ' + (ok ? "ok" : "bad") + '">' +
         "in-page recompute " + usd(again) + (ok ? " — matches board.json" : " — MISMATCH vs board.json " + usd(r.implied_value_usd)) + "</div>";
+      mid += "<h3>Model inputs — this row's own snapshot figures</h3><div class=\"facts\">" +
+        fact("tvl_usd", "$" + String(r.tvl_usd)) +
+        fact("change_7d", r.change_7d == null ? "null" : String(r.change_7d)) +
+        fact("listed_at", r.listed_at == null ? "null" : String(r.listed_at)) +
+        fact("chains (" + r.chains.length + ")", r.chains.join(", ")) + "</div>";
       if (r.model) {
-        mid += "<h3>Model inputs</h3><div class=\"facts\">" +
+        mid += "<h3>Derived factors</h3><div class=\"facts\">" +
           fact("base 0.25×TVL", usd(Math.round(r.model.base))) +
           fact("growth mult", Number(r.model.growthMult).toFixed(3) + "×") +
           fact("maturity", Number(r.model.maturity).toFixed(3) + "×") +
