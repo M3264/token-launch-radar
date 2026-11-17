@@ -1,14 +1,67 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Radar: pre-token protocols ranked by implied value</title>
+<title>Token Launch Radar</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<a class="skip" href="#board">Skip to the board</a>
-<main id="board" tabindex="-1" aria-busy="true"></main>
+<main id="app">
+  <header class="top">
+    <div class="brand"><span class="dot"></span><span>TOKEN LAUNCH RADAR</span></div>
+    <div class="meta" id="meta">loading snapshot…</div>
+  </header>
+
+  <section class="lede">
+    <h1>Which pre-token protocol is worth farming next?</h1>
+    <p class="sub">Every protocol below records no token. Each carries an implied value derived from its own
+    TVL, 7-day growth, age with no token, chain spread and deposit velocity — plus a concrete farm plan
+    with costs and holding times. Protocols whose token already trades are set aside on the Live tab.</p>
+    <div class="kpis" id="kpis"></div>
+  </section>
+
+  <section class="controls">
+    <div class="tabs" role="tablist">
+      <button id="tabPre" role="tab">Pre-token board</button>
+      <button id="tabLive" role="tab">Live (set aside)</button>
+    </div>
+    <div class="filters">
+      <input id="q" type="search" placeholder="Search name or slug…" autocomplete="off">
+      <select id="cat"><option value="">All categories</option></select>
+      <select id="limit">
+        <option value="25">25 rows</option>
+        <option value="50" selected>50 rows</option>
+        <option value="100">100 rows</option>
+        <option value="9999">All rows</option>
+      </select>
+    </div>
+  </section>
+
+  <section class="boardwrap">
+    <table id="board">
+      <thead><tr id="headrow"></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>
+      <p>No protocols match this filter.</p>
+      <button id="reset">Reset filters</button>
+    </div>
+  </section>
+
+  <aside class="drawer" id="drawer" hidden></aside>
+
+  <section class="model" id="model">
+    <h2>The value model</h2>
+    <p id="formula"></p>
+    <dl id="terms"></dl>
+    <p class="note">An implied value is this entry's own claim from the snapshot's figures — never a
+    prediction of whether or when a token is issued, and never financial advice. A protocol listed here
+    records no token; that is the snapshot's record, not proof it has none.</p>
+  </section>
+
+  <footer class="foot" id="foot"></footer>
+</main>
 <script src="../data.js"></script>
 <script src="app.js"></script>
 </body>
