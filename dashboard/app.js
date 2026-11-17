@@ -33,7 +33,10 @@
     var growthMult = 1 + (growth / 100) * model.growth_weight;
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
     var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity));
+    var spread = 1 + model.spread_step * Math.min((row.chains || []).length, model.spread_cap_chains);
+    var velocity = row.tvl_usd / Math.max(age, 30);
+    var efficiency = model.efficiency_lo + (model.efficiency_hi - model.efficiency_lo) * Math.min(Math.max(Math.log10(1 + velocity / 1e6) / 2, 0), 1);
+    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity * spread * efficiency));
   }
 
   function el(tag, attrs) {
@@ -60,6 +63,15 @@
   // The farm plan is the same derivation main.ts writes to board.json: category, chains, TVL and age
   // decide the action, the capital, the hold and every cost and time. No name is special-cased.
   function chainOf(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'its main chain'; }
+  function gasFor(chain) {
+    var c = chain.toLowerCase();
+    if (c.indexOf('ethereum') >= 0) return 12;
+    if (c.indexOf('solana') >= 0) return 0.05;
+    if (c.indexOf('tron') >= 0) return 1;
+    if (c.indexOf('bsc') >= 0 || c.indexOf('binance') >= 0 || c.indexOf('avalanche') >= 0 || (c.indexOf('polygon') >= 0 && c.indexOf('zkevm') < 0)) return 0.4;
+    if (c.indexOf('arbitrum') >= 0 || c.indexOf('optimism') >= 0 || c.indexOf('base') >= 0 || c.indexOf('blast') >= 0 || c.indexOf('mode') >= 0 || c.indexOf('scroll') >= 0 || c.indexOf('linea') >= 0 || c.indexOf('zora') >= 0 || c.indexOf('zkevm') >= 0 || c.indexOf('starknet') >= 0 || c.indexOf('zksync') >= 0) return 0.25;
+    return 2;
+  }
   function capitalFor(p) {
     if (p.tvl_usd >= 5e9) return 250;
     if (p.tvl_usd >= 1e9) return 150;
@@ -75,17 +87,20 @@
   function actionFor(p, capital, chain) {
     var c = (p.category || '').toLowerCase();
     var name = p.name;
-    if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return 'Supply $' + capital + ' of USDC to ' + name + ' on ' + chain + ' and keep the position open.';
-    if (c.indexOf('dex') >= 0 || c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0) return 'Provide $' + capital + ' of liquidity to ' + name + "'s main pool on " + chain + ' and keep the position open.';
-    if (c.indexOf('bridge') >= 0) return 'Bridge $' + capital + ' of USDC to ' + chain + ' through ' + name + ' and use the bridged funds in its app.';
-    if (c.indexOf('staking') >= 0 || c.indexOf('restak') >= 0) return "Stake $" + capital + " of the chain's staking asset through " + name + ' and keep the receipt.';
-    if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0) return 'Deposit $' + capital + ' of USDC as margin on ' + name + ' and open one small hedge.';
-    if (c.indexOf('prediction') >= 0) return 'Fund $' + capital + ' and place one market position on ' + name + '.';
-    if (c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0) return 'Deposit $' + capital + ' into a ' + name + ' vault on ' + chain + ' and keep the shares.';
-    if (c.indexOf('stable') >= 0) return 'Mint or deposit $' + capital + ' of the stable asset through ' + name + ' on ' + chain + '.';
-    if (c.indexOf('rwa') >= 0) return "Mint $" + capital + " of the protocol's yield asset on " + chain + ' and hold it.';
-    if (c.indexOf('insurance') >= 0) return 'Buy $' + capital + ' of cover from ' + name + ' on ' + chain + ' and keep the policy.';
-    return 'Deposit $' + capital + ' of USDC into ' + name + ' on ' + chain + ' and keep the position open.';
+    if (c.indexOf('liquid staking') >= 0 || c.indexOf('liquid restaking') >= 0 || c.indexOf('restaked') >= 0) return 'Stake $' + capital + ' of the chain staking asset through ' + name + ' on ' + chain + ', keep the liquid receipt, and restake the receipt once.';
+    if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0 || c.indexOf('money market') >= 0) return 'Supply $' + capital + ' of USDC to ' + name + ' on ' + chain + ', borrow one third of it back against the deposit, and repay before the hold ends.';
+    if (c.indexOf('dex') >= 0 || c.indexOf('leveraged farm') >= 0) return 'Provide $' + capital + ' of two-sided liquidity to ' + name + "'s deepest pool on " + chain + ' inside a narrow range, and rebalance once a month.';
+    if (c.indexOf('yield aggregator') >= 0 || c.indexOf('onchain capital allocator') >= 0 || c.indexOf('risk curator') >= 0 || c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0) return 'Deposit $' + capital + ' into the highest-TVL ' + name + ' vault on ' + chain + ', keep the vault shares for the whole hold, and vote in one curator poll if it opens one.';
+    if (c.indexOf('canonical bridge') >= 0 || c.indexOf('bridge') >= 0) return 'Bridge $' + capital + ' of USDC into ' + chain + ' through ' + name + ', deploy the bridged funds in one ' + chain + ' app, then bridge back before the hold ends.';
+    if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0 || c.indexOf('options') >= 0 || c.indexOf('prediction') >= 0) return 'Deposit $' + capital + ' of USDC as margin on ' + name + ' on ' + chain + ', open one small hedged position, and settle it before the hold ends.';
+    if (c.indexOf('yield') >= 0 || c.indexOf('farm') >= 0) return 'Stake $' + capital + ' into ' + name + "'s highest-yield pool on " + chain + ', compound the rewards once, and keep the receipt.';
+    if (c.indexOf('staking') >= 0) return 'Stake $' + capital + " of the chain's staking asset through " + name + ' and keep the receipt for the whole hold.';
+    if (c.indexOf('stable') >= 0) return 'Mint or deposit $' + capital + ' of the stable asset through ' + name + ' on ' + chain + ', and use it in one pool for the whole hold.';
+    if (c.indexOf('rwa') >= 0) return 'Mint $' + capital + " of the protocol's yield-bearing asset on " + chain + ', hold it for the whole window, and check the redemption terms once.';
+    if (c.indexOf('insurance') >= 0) return 'Buy $' + capital + ' of cover from ' + name + ' on ' + chain + ', keep the policy for the whole hold, and file nothing unless there is a real event.';
+    if (c.indexOf('oracle') >= 0 || c.indexOf('infrastructure') >= 0) return 'Run ' + name + "'s feed or node task on " + chain + ' with $' + capital + ' bonded if it asks for stake, and keep it online for the whole hold.';
+    if (c.indexOf('nft') >= 0) return 'List or lend one asset through ' + name + ' on ' + chain + ' with $' + capital + ' of backing, and keep the listing live for the whole hold.';
+    return 'Deposit $' + capital + ' of USDC into ' + name + ' on ' + chain + ' and keep the position open for the whole hold.';
   }
   function stepText(step) {
     var s = step.text + ' Cost: ' + step.cost + '. Time: ' + step.time + '.';
@@ -97,10 +112,13 @@
     var chain = chainOf(p);
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
+    var gas = gasFor(chain);
+    var weeks = Math.max(2, Math.round(hold / 7));
     return [
       { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
-      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
-      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $2 of gas a week', time: '10 minutes a week' },
+      { text: 'Move $' + capital + ' of USDC onto ' + chain + ' through the cheapest route you trust, and leave a $' + gas + ' gas buffer in the wallet.', cost: 'about $' + gas + ' of gas for the transfer', time: '10 minutes to fund' },
+      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + gas + ' of gas', time: '15 minutes to set up' },
+      { text: 'Make one qualifying action a week for ' + weeks + ' weeks, such as a deposit top-up, a borrow-and-repay loop, a swap, or a governance vote.', cost: 'about $' + gas + ' of gas a week', time: '10 minutes a week' },
       { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
       { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
       { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
@@ -287,9 +305,9 @@
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
+        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x spread x efficiency )'
       ),
-      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' })
+      el('p', { class: 'sub', text: 'Spread is 1 + ' + m.spread_step + ' per chain up to ' + m.spread_cap_chains + ' chains: distribution across chains. Efficiency runs ' + m.efficiency_lo + ' to ' + m.efficiency_hi + ' on TVL per listed day: fast capital formation signals demand. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every rankable pre-token protocol below the watchlist floor, and the live-token protocols are set aside with their market caps shown.' })
     );
   }
 
@@ -319,6 +337,8 @@
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
         el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
+        el('div', null, el('span', { text: 'Chain-spread multiplier' }), el('b', { class: 'num', text: String(row.spread_multiplier) })),
+        el('div', null, el('span', { text: 'Capital-efficiency multiplier' }), el('b', { class: 'num', text: String(row.efficiency_multiplier) })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(impliedOf(row, DATA.model)) + (impliedOf(row, DATA.model) === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
