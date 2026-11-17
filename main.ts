@@ -10,7 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, cpSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ageDays, farmSteps, isRankable, scoreProtocol } from "./lib/model.ts";
+import { ageDays, compFor, farmSteps, fitComps, isRankable, planCost, scoreProtocol } from "./lib/model.ts";
 import { buildDossier } from "./vendor/makefun-board.ts";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -79,19 +79,31 @@ for (const p of snap.protocols) {
 interface Scored {
   p: SnapshotProtocol;
   implied: number;
-  model: Record<string, number | null>;
+  model: Record<string, number | string | null>;
   age: number | null;
   steps: string[];
+  cost: { capital_usd: number; gas: { chain: string; units: number }[]; gas_total_units: number; line: string };
 }
+
+// Category comps fitted from the snapshot's own live-token protocols:
+// non-CEX protocols carrying both mcap_usd and tvl_usd.
+const fit = fitComps(
+  snap.protocols
+    .filter((p) => p.category !== "CEX" && p.mcap_usd !== null && p.tvl_usd !== null)
+    .map((p) => ({ category: p.category, mcap_usd: p.mcap_usd!, tvl_usd: p.tvl_usd })),
+);
 
 const scored: Scored[] = [];
 for (const p of picked.values()) {
-  const m = scoreProtocol(p, asOf);
+  const comp = compFor(fit, p.category);
+  const m = scoreProtocol(p, asOf, comp.mult, comp.source);
   scored.push({
     p,
     implied: m.implied,
     model: {
       base: m.base,
+      compMult: m.compMult,
+      compSource: m.compSource,
       growth: m.growth,
       growthMult: m.growthMult,
       maturity: m.maturity,
@@ -101,6 +113,7 @@ for (const p of picked.values()) {
     },
     age: m.ageDays,
     steps: farmSteps(p, asOf),
+    cost: planCost(p),
   });
 }
 
@@ -123,6 +136,7 @@ const rows = scored.map((s, i) => ({
   age_days: s.age,
   implied_value_usd: s.implied,
   model: s.model,
+  plan_cost: s.cost,
   farm_steps: s.steps,
 }));
 
@@ -205,8 +219,13 @@ const payload = {
     live_set_aside: liveTotal,
     live_shown: live.length,
     model: {
-      formula: "implied = round(0.25*tvl * (1+clamp(change_7d,0)/200) * maturity * spread * efficiency)",
-      base: "tvl_usd*0.25",
+      formula: "implied = round(comp*tvl * (1+clamp(change_7d,0)/200) * maturity * spread * efficiency), comp = category median mcap/tvl over live non-CEX protocols, clamped to [0.05, 2.0], global median fallback",
+      base: "tvl_usd*compMult",
+      comp: "median(mcap_usd/tvl_usd) per category over live non-CEX protocols with both figures, clamped to [0.05, 2.0]; unseen categories use the global median",
+      fit_live_protocols: fit.liveCount,
+      fit_med_abs_log_err: fit.medAbsLogErr,
+      fit_method: fit.method,
+      fit_global_median: fit.global,
       growth: "clamp(change_7d ?? 0,-60,120)",
       growthMult: "1+growth/100*0.5",
       maturity: "0.6+min(max(age_days ?? 365,0),1095)/1095*0.4",
@@ -230,4 +249,8 @@ writeFileSync(join(outDir, "dossier.json"), Buffer.from(buildDossier(outDir, { t
 
 console.log(
   `radar: ${rows.length} rows (watchlist ${snap.watchlist.length}/${snap.watchlist.length}, early below floor ${earlyBelow}, live set aside ${liveTotal}) -> ${outDir}`,
+);
+console.log(
+  `comps: fitted over ${fit.liveCount} live protocols, global median ${fit.global.toFixed(4)}, ` +
+  `median |ln(pred/mcap)| leave-one-out ${fit.medAbsLogErr.toFixed(4)} (band [0.05, 2.0])`,
 );

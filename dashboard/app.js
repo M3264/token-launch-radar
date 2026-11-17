@@ -34,7 +34,8 @@
 
   /* Same arithmetic as lib/model.ts scoreProtocol, run in-page per row. */
   function recompute(r) {
-    var base = r.tvl_usd * 0.25;
+    var cm = (r.model && r.model.compMult) || 0.25;
+    var base = r.tvl_usd * cm;
     var g = r.change_7d == null ? 0 : Math.min(120, Math.max(-60, r.change_7d));
     var gm = 1 + (g / 100) * 0.5;
     var a = r.age_days == null ? 365 : r.age_days;
@@ -83,6 +84,9 @@
       var x, y;
       if (k === "name") { x = a.name.toLowerCase(); y = b.name.toLowerCase(); return x < y ? -d : x > y ? d : 0; }
       if (k === "tvl") { x = a.tvl_usd; y = b.tvl_usd; }
+      else if (k === "comp") {
+        x = (a.model && a.model.compMult) || 0; y = (b.model && b.model.compMult) || 0;
+      }
       else if (k === "change") { x = a.change_7d == null ? -1e18 : a.change_7d; y = b.change_7d == null ? -1e18 : b.change_7d; }
       else if (k === "age") { x = a.age_days == null ? -1 : a.age_days; y = b.age_days == null ? -1 : b.age_days; }
       else if (k === "value") { x = valOf(a); y = valOf(b); }
@@ -94,7 +98,7 @@
 
   var COLS = [
     ["rank", "Rank"], ["name", "Protocol"], ["tvl", "TVL"],
-    ["change", "7d"], ["age", "Age"], ["value", "Implied value"], ["status", "Status"],
+    ["change", "7d"], ["age", "Age"], ["comp", "Comp"], ["value", "Implied value"], ["status", "Status"],
   ];
 
   function renderHead() {
@@ -128,11 +132,12 @@
         ? '<span class="badge pre">pre-token</span>' : '<span class="badge live">live</span>';
       var rankCell = r.rank != null && r.rank <= 3 && state.tab === "pre"
         ? '<span class="medal m' + r.rank + '">' + r.rank + "</span>" : (r.rank || "—");
-      return '<tr data-slug="' + esc(r.slug) + '"' + (state.open === r.slug ? ' class="sel"' : "") + ">" +
+      return '<tr data-slug="' + esc(r.slug) + '"' + (state.open === r.slug ? ' class="sel"' : "") + '">' +
         "<td>" + rankCell + "</td>" +
         '<td><span class="name">' + esc(r.name) + '</span><br><span class="slug">' + esc(r.slug) +
         '</span> <span class="catchip">' + esc(r.category || "Uncategorized") + "</span></td>" +
         "<td>" + usd(r.tvl_usd) + "</td><td>" + pct(r.change_7d) + "</td><td>" + age(r.age_days) + "</td>" +
+        "<td>" + (r.model && r.model.compMult != null ? Number(r.model.compMult).toFixed(2) + "×" : "—") + "</td>" +
         "<td>" + val + "</td><td>" + badge + "</td></tr>";
     }).join("");
     Array.prototype.forEach.call($("rows").children, function (tr) {
@@ -173,12 +178,17 @@
         fact("chains (" + r.chains.length + ")", r.chains.join(", ")) + "</div>";
       if (r.model) {
         mid += "<h3>Derived factors</h3><div class=\"facts\">" +
-          fact("base 0.25×TVL", usd(Math.round(r.model.base))) +
+          fact("comp " + (r.category || "Uncategorized") + " ×",
+            Number(r.model.compMult).toFixed(4) + " · " + String(r.model.compSource || "")) +
+          fact("base comp×TVL", usd(Math.round(r.model.base))) +
           fact("growth mult", Number(r.model.growthMult).toFixed(3) + "×") +
           fact("maturity", Number(r.model.maturity).toFixed(3) + "×") +
           fact("spread", Number(r.model.spread).toFixed(3) + "×") +
           fact("efficiency", Number(r.model.efficiency).toFixed(3) + "×") +
           fact("implied", usd(r.implied_value_usd)) + "</div>";
+      }
+      if (r.plan_cost && r.plan_cost.line) {
+        mid += '<div class="match ok">' + esc(r.plan_cost.line) + "</div>";
       }
       mid += "<h3>Farm plan</h3><ol>" + r.farm_steps.map(function (s) { return "<li>" + esc(s) + "</li>"; }).join("") + "</ol>";
     } else {
@@ -193,13 +203,17 @@
   }
 
   function renderStatic() {
+    var m = meta.model || {};
     $("meta").textContent = "snapshot " + meta.as_of + " · floor " + usd(meta.floor_usd) +
-      " · model implied = round(0.25·tvl·growth·maturity·spread·efficiency)";
+      " · model implied = round(comp·tvl·growth·maturity·spread·efficiency), comp fitted per category";
+    var fitTxt = (m.fit_med_abs_log_err != null ? Number(m.fit_med_abs_log_err).toFixed(3) : "n/a") +
+      " median |ln(pred/mcap)| over " + (m.fit_live_protocols != null ? m.fit_live_protocols : "?") + " live";
     $("kpis").innerHTML =
       fact("watchlist covered", meta.watchlist_covered + "/" + meta.watchlist_total) +
       fact("protocols scored", String(meta.rows_scored)) +
       fact("early finds below floor", String(meta.early_below_floor)) +
-      fact("live tokens set aside", String(meta.live_set_aside) + " (" + meta.live_shown + " shown)");
+      fact("live tokens set aside", String(meta.live_set_aside) + " (" + meta.live_shown + " shown)") +
+      fact("comp fit quality", fitTxt);
     var cats = {};
     rows.forEach(function (r) { cats[r.category || "Uncategorized"] = 1; });
     var sel = $("cat"), keep = state.cat;
@@ -207,12 +221,17 @@
       return '<option value="' + esc(c) + '">' + esc(c) + "</option>";
     }).join("");
     sel.value = keep;
-    $("formula").innerHTML = "implied = round(0.25 × tvl × <code>(1+g/200)</code> × " +
-      "<code>maturity</code> × <code>spread</code> × <code>efficiency</code>), strongest first.";
-    var terms = [["base", "tvl_usd × 0.25"], ["g", "clamp(change_7d ?? 0, −60, 120)"],
+    $("formula").innerHTML = "implied = round(comp × tvl × <code>(1+g/200)</code> × " +
+      "<code>maturity</code> × <code>spread</code> × <code>efficiency</code>), strongest first. " +
+      "comp = this row's category median mcap/tvl over live tokens (global fallback), clamped [0.05, 2.0].";
+    var terms = [["comp", "category median mcap/tvl over live non-CEX, clamped [0.05, 2.0]; global median fallback"],
+      ["base", "tvl_usd × comp"], ["g", "clamp(change_7d ?? 0, −60, 120)"],
       ["maturity", "0.6 + min(max(age ?? 365,0),1095)/1095 × 0.4"], ["spread", "1 + 0.05 × min(chains, 8)"],
       ["velocity", "tvl / max(age ?? 365, 30)"], ["efficiency", "0.9 + 0.2 × clamp(log10(1+v/1e6)/2, 0, 1)"]];
     $("terms").innerHTML = terms.map(function (t) { return "<dt>" + t[0] + "</dt><dd>" + esc(t[1]) + "</dd>"; }).join("");
+    $("fit").textContent = "Fit quality: " + fitTxt + " (leave-one-out; " +
+      (m.fit_method || "category median mcap/tvl") + "). Global fallback comp " +
+      (m.fit_global_median != null ? Number(m.fit_global_median).toFixed(4) : "n/a") + ", band [0.05, 2.0].";
     $("foot").textContent = "token launch radar · snapshot " + meta.as_of + " · " + rows.length +
       " pre-token rows ranked strongest first · implied values are the entry's own claim, not financial advice";
   }

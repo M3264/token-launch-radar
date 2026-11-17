@@ -1,9 +1,16 @@
 // Token-launch radar: value model for pre-token protocols.
 //
-// Every number comes from the snapshot's own figures for one protocol:
-// TVL, its 7-day change, how long it has run (listed_at vs as_of), how many
-// chains it spans, and the velocity of deposits over its lifetime. No
-// protocol name is special-cased anywhere in this file.
+// The base multiple is not a fixed constant: it is fitted from the
+// snapshot's own live-token protocols (non-CEX, with both mcap_usd and
+// tvl_usd) as the median mcap/tvl per category, falling back to the global
+// median for unseen categories, clamped into [COMP_LO, COMP_HI].
+// Everything else comes from one protocol's own snapshot figures: TVL, its
+// 7-day change, how long it has run (listed_at vs as_of), how many chains
+// it spans, and the velocity of deposits over its lifetime. No protocol
+// name is special-cased anywhere in this file.
+
+export const COMP_LO = 0.05;
+export const COMP_HI = 2.0;
 
 export interface ProtocolInput {
   slug: string;
@@ -17,6 +24,8 @@ export interface ProtocolInput {
 
 export interface ModelBreakdown {
   base: number;
+  compMult: number;
+  compSource: string;
   growth: number;
   growthMult: number;
   ageDays: number | null;
@@ -57,13 +66,87 @@ export function clamp(x: number, lo: number, hi: number): number {
   return x < lo ? lo : x > hi ? hi : x;
 }
 
+/** Median of a non-empty list; NaN when empty. */
+export function median(xs: number[]): number {
+  if (xs.length === 0) return NaN;
+  const s = [...xs].sort((a, b) => a - b);
+  const n = s.length;
+  return n % 2 === 1 ? s[(n - 1) / 2]! : (s[n / 2 - 1]! + s[n / 2]!) / 2;
+}
+
+export interface CompLive {
+  category: string | null;
+  mcap_usd: number;
+  tvl_usd: number;
+}
+
+export interface CompFit {
+  byCategory: Record<string, number>;
+  byCategoryN: Record<string, number>;
+  global: number;
+  liveCount: number;
+  /** Median |ln(predicted/actual)| over the live set, leave-one-out. */
+  medAbsLogErr: number;
+  method: string;
+}
+
 /**
- * Score one protocol: a quarter of TVL, scaled by growth momentum, by how
- * long it has run without a token, by chain spread, and by deposit velocity.
+ * Fit category comps from live-token protocols: median mcap/tvl per
+ * category, global median fallback, everything clamped into
+ * [COMP_LO, COMP_HI]. Fit quality is the median absolute log error of the
+ * comp prediction on the live set, each protocol predicted by comps fitted
+ * without it (leave-one-out).
  */
-export function scoreProtocol(p: ProtocolInput, asOf: string): ModelBreakdown {
+export function fitComps(live: CompLive[]): CompFit {
+  const usable = live.filter((p) => Number.isFinite(p.mcap_usd) && p.mcap_usd > 0 &&
+    Number.isFinite(p.tvl_usd) && p.tvl_usd > 0);
+  const ratios = (ps: CompLive[]): number[] => ps.map((p) => p.mcap_usd / p.tvl_usd);
+  const perCat = new Map<string, CompLive[]>();
+  for (const p of usable) {
+    const c = p.category ?? "Uncategorized";
+    if (!perCat.has(c)) perCat.set(c, []);
+    perCat.get(c)!.push(p);
+  }
+  const byCategory: Record<string, number> = {};
+  const byCategoryN: Record<string, number> = {};
+  for (const [c, ps] of perCat) {
+    byCategory[c] = clamp(median(ratios(ps)), COMP_LO, COMP_HI);
+    byCategoryN[c] = ps.length;
+  }
+  const global = clamp(median(ratios(usable)), COMP_LO, COMP_HI);
+  const errs: number[] = [];
+  for (let i = 0; i < usable.length; i++) {
+    const p = usable[i]!;
+    const c = p.category ?? "Uncategorized";
+    const catOthers = perCat.get(c)!.filter((q) => q !== p);
+    const comp = catOthers.length > 0
+      ? clamp(median(ratios(catOthers)), COMP_LO, COMP_HI)
+      : clamp(median(ratios(usable.filter((q) => q !== p))), COMP_LO, COMP_HI);
+    const pred = Math.max(1e-9, p.tvl_usd * comp);
+    errs.push(Math.abs(Math.log(pred / p.mcap_usd)));
+  }
+  const medAbsLogErr = errs.length > 0 ? median(errs) : NaN;
+  return {
+    byCategory, byCategoryN, global, liveCount: usable.length, medAbsLogErr,
+    method: "median mcap/tvl per category over live non-CEX protocols (global median fallback), clamped to [0.05, 2.0]; quality = median |ln(pred/mcap)| leave-one-out",
+  };
+}
+
+/** Comp multiple and a human-readable source label for one category. */
+export function compFor(fit: CompFit, category: string | null): { mult: number; source: string } {
+  const c = category ?? "Uncategorized";
+  if (c in fit.byCategory) return { mult: fit.byCategory[c]!, source: `category ${c} median (n=${fit.byCategoryN[c]})` };
+  return { mult: fit.global, source: `global median fallback (n=${fit.liveCount})` };
+}
+
+/**
+ * Score one protocol: TVL times its category comp multiple, scaled by
+ * growth momentum, by how long it has run without a token, by chain
+ * spread, and by deposit velocity.
+ */
+export function scoreProtocol(p: ProtocolInput, asOf: string, compMult = 0.25, compSource = "fixed 0.25"): ModelBreakdown {
   const age = ageDays(p.listed_at, asOf);
-  const base = p.tvl_usd * 0.25;
+  const base = p.tvl_usd * compMult;
   const growth = clamp(p.change_7d ?? 0, -60, 120);
   const growthMult = 1 + (growth / 100) * 0.5;
   const maturity = 0.6 + (Math.min(Math.max(age ?? 365, 0), 1095) / 1095) * 0.4;
@@ -71,7 +154,7 @@ export function scoreProtocol(p: ProtocolInput, asOf: string): ModelBreakdown {
   const velocity = p.tvl_usd / Math.max(age ?? 365, 30);
   const efficiency = 0.9 + 0.2 * clamp(Math.log10(1 + velocity / 1e6) / 2, 0, 1);
   const implied = Math.max(1, Math.round(base * growthMult * maturity * spread * efficiency));
-  return { base, growth, growthMult, ageDays: age, maturity, spread, velocity, efficiency, implied };
+  return { base, compMult, compSource, growth, growthMult, ageDays: age, maturity, spread, velocity, efficiency, implied };
 }
 
 /** Native gas to keep on the first chain, in that chain's own gas units. */
@@ -190,6 +273,28 @@ export function endDate(asOf: string, holdDays: number): string {
   return new Date(t + holdDays * 86400000).toISOString().slice(0, 10);
 }
 
+export interface PlanCost {
+  capital_usd: number;
+  gas: { chain: string; units: number }[];
+  gas_total_units: number;
+  line: string;
+}
+
+/**
+ * Explicit per-plan cost total: working capital plus summed gas units over
+ * the protocol's chains. Gas stays in native units (no invented prices).
+ */
+export function planCost(p: ProtocolInput): PlanCost {
+  const capital = capitalFor(p.tvl_usd);
+  const chains = p.chains.length > 0 ? p.chains : ["Ethereum"];
+  const gas = chains.map((chain) => ({ chain, units: gasFor(chain) }));
+  const total = gas.reduce((s, g) => s + g.units, 0);
+  const line =
+    `Plan cost total: about $${capital} working capital plus ${total} ` +
+    `summed gas units across ${chains.length} chain${chains.length === 1 ? "" : "s"} for fees.`;
+  return { capital_usd: capital, gas, gas_total_units: total, line };
+}
+
 /** Seven concrete farm steps for one protocol; each trims to 20-600 characters. */
 export function farmSteps(p: ProtocolInput, asOf = "2026-11-14"): string[] {
   const first = p.chains[0] ?? "Ethereum";
@@ -202,7 +307,7 @@ export function farmSteps(p: ProtocolInput, asOf = "2026-11-14"): string[] {
   const end = endDate(asOf, hold);
   return [
     `Open a fresh wallet used only for ${p.name} on ${first}; back up the seed phrase offline and never mix it with other farms.`,
-    `Fund it with ${moneyStr(capital)} for the position plus ${gasFor(first)} ${first} gas for fees, in a single transfer from an exchange.`,
+    `Fund it with ${moneyStr(capital)} for the position plus gas for fees, in a single transfer from an exchange. ${planCost(p).line}`,
     actionFor(p.category, capital, first, p.name),
     `Work a ${weeks}-week rotation on ${first}, one touch per week on different weekdays: (a) repeat the qualifying ${verb} above, (b) add a small about $${touch} top-up or swap, (c) open the points page with the farming wallet — then cycle.`,
     `Leave the position working until at least ${end} (${hold} days from the ${asOf} snapshot); avoid early withdrawals since age and consistency are what a snapshot rewards.`,

@@ -55,6 +55,16 @@ const valsOk = rows.every((r) => Number.isSafeInteger(r.implied_value_usd) &&
   r.implied_value_usd >= 1 && r.implied_value_usd <= 100000000000000);
 check("values-safe-range", valsOk, "1..1e14 safe integers");
 
+// --- comps fit invariants ---
+const compOk = rows.every((r) => r.model && typeof r.model.compMult === "number" &&
+  r.model.compMult >= 0.05 && r.model.compMult <= 2.0 && typeof r.model.compSource === "string");
+check("model-comp-band", compOk, "compMult in [0.05, 2.0] with source label");
+const costOk = rows.every((r) => r.plan_cost && typeof r.plan_cost.line === "string" &&
+  r.plan_cost.line.trim().length >= 20 && r.plan_cost.line.trim().length <= 600 &&
+  /capital/i.test(r.plan_cost.line) && /gas/i.test(r.plan_cost.line) &&
+  Number.isFinite(r.plan_cost.capital_usd) && Number.isFinite(r.plan_cost.gas_total_units));
+check("plan-cost-total", costOk, "explicit capital+gas cost line per plan");
+
 // --- file caps ---
 const boardBytes = fs.statSync(path.join(outDir, "board.json")).size;
 check("board-<=8MiB", boardBytes <= 8 * 1024 * 1024, `${boardBytes} bytes`);
@@ -172,11 +182,18 @@ if (m) {
   check("data.js-live-24", Array.isArray(data.live) && data.live.length <= 24 && data.live.length > 0,
     `${data.live.length} live`);
   numbers.live_shown = data.live.length;
+  const fm = (data.meta && data.meta.model) || {};
+  check("data.js-fit-quality", Number.isFinite(fm.fit_med_abs_log_err) && fm.fit_med_abs_log_err >= 0 &&
+    Number.isInteger(fm.fit_live_protocols) && fm.fit_live_protocols > 0,
+    `medAbsLogErr=${fm.fit_med_abs_log_err} over ${fm.fit_live_protocols} live`);
+  numbers.fit_med_abs_log_err = fm.fit_med_abs_log_err;
+  numbers.fit_live = fm.fit_live_protocols;
 }
 
 // --- in-page recompute equality on sampled rows ---
 function recompute(r) {
-  const base = r.tvl_usd * 0.25;
+  const cm = (r.model && r.model.compMult) || 0.25;
+  const base = r.tvl_usd * cm;
   const g = r.change_7d == null ? 0 : Math.min(120, Math.max(-60, r.change_7d));
   const gm = 1 + g / 100 * 0.5;
   const a = Math.min(1095, Math.max(0, r.age_days == null ? 365 : r.age_days));
