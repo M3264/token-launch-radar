@@ -1,4 +1,5 @@
-// Token-launch radar: value model for pre-token protocols.
+// Legacy baseline value model for fair comparison; candidate regression is in value.ts.
+// Also provides shared selection and conditional research-plan helpers.
 //
 // The base multiple is not a fixed constant: it is fitted from the
 // snapshot's own live-token protocols (non-CEX, with both mcap_usd and
@@ -157,165 +158,25 @@ export function scoreProtocol(p: ProtocolInput, asOf: string, compMult = 0.25, c
   return { base, compMult, compSource, growth, growthMult, ageDays: age, maturity, spread, velocity, efficiency, implied };
 }
 
-/** Native gas to keep on the first chain, in that chain's own gas units. */
-export function gasFor(chain: string): number {
-  const c = chain.toLowerCase();
-  if (c.includes("ethereum")) return 12;
-  if (c.includes("solana")) return 0.05;
-  if (c.includes("tron")) return 1;
-  if (c.includes("arbitrum") || c.includes("optimism") || c.includes("base") ||
-      c.includes("blast") || c.includes("mode") || c.includes("scroll") ||
-      c.includes("linea") || c.includes("zora") || c.includes("zkevm") ||
-      c.includes("starknet") || c.includes("zksync")) return 0.25;
-  if (c.includes("bsc") || c.includes("binance") || c.includes("avalanche") ||
-      c.includes("polygon")) return 0.4;
-  return 2;
+/** Illustrative working-capital budget, not an eligibility threshold or fee. */
+export function capitalFor(tvl:number):number { return tvl>=5e9?250:tvl>=1e9?150:tvl>=1e8?100:50; }
+export function endDate(asOf:string,days:number):string {return new Date(Date.parse(asOf+'T00:00:00Z')+days*86400000).toISOString().slice(0,10);}
+export interface PlanCost {capital_usd:number;gas:{chain:string;units:null}[];gas_total_units:null;line:string;}
+export function planCost(p:ProtocolInput):PlanCost {
+ const capital=capitalFor(p.tvl_usd);
+ return {capital_usd:capital,gas:p.chains.map(chain=>({chain,units:null})),gas_total_units:null,
+ line:`Illustrative budget: $${capital} working capital at risk, not a fee or eligibility minimum; consumable gas, bridge fees and slippage unquoted. Obtain wallet estimates per transaction and chain; do not sum unlike native units.`};
 }
-
-/** Working capital for the qualifying position, by TVL tier. */
-export function capitalFor(tvl: number): number {
-  if (tvl >= 5000000000) return 250;
-  if (tvl >= 1000000000) return 150;
-  if (tvl >= 100000000) return 100;
-  return 50;
-}
-
-/** Minimum holding period: younger protocols need longer to look organic; unknown age plays safe. */
-export function holdDaysFor(age: number | null): number {
-  if (age === null) return 30;
-  if (age < 180) return 60;
-  if (age < 365) return 45;
-  return 30;
-}
-
-/** Weekly qualifying touches implied by the holding period, at least two. */
-export function weeksFor(holdDays: number): number {
-  return Math.max(2, Math.round(holdDays / 7));
-}
-
-/** The qualifying action for step 3: one concrete move per protocol kind. */
-export function actionFor(category: string | null, capital: number, chain: string, name: string): string {
-  const c = (category ?? "").toLowerCase();
-  const money = `about $${capital}`;
-  if (c.includes("restak") || (c.includes("liquid") && c.includes("stak")))
-    return `Restake ${money} of liquid-staking tokens through ${name} on ${chain} and hold the receipt token so restaking points accrue.`;
-  if (c.includes("lend") || c.includes("cdp") || c.includes("collateral") || c.includes("borrow") ||
-      c.includes("uncollateralized") || c.includes("money market") || c.includes("cedefi"))
-    return `Supply ${money} to ${name} lending pools on ${chain} as collateral, borrow a small amount against it, and repay monthly.`;
-  if (c.includes("dex") || c.includes("amm") || c.includes("liquidity manager") || c.includes("market maker"))
-    return `Provide ${money} of two-sided liquidity to ${name} pools on ${chain} and route a small swap through them on each visit.`;
-  if (c.includes("curator") || c.includes("aggregat") || c.includes("allocat") || c.includes("index") ||
-      c.includes("vault") || c.includes("manager"))
-    return `Deposit ${money} into ${name} vaults or curated allocations on ${chain} and keep the receipt token for the whole period.`;
-  if (c.includes("bridge") || c.includes("canonical"))
-    return `Bridge ${money} into ${chain} through ${name} in two or three tranches on different days to build a bridging history.`;
-  if (c.includes("perp") || c.includes("deriv") || c.includes("option") || c.includes("predict") ||
-      c.includes("synth") || c.includes("basis") || c.includes("leverag") || c.includes("future"))
-    return `Open small hedged perp or derivative positions totalling ${money} on ${name} (${chain}), closing most within days.`;
-  if (c.includes("yield") || c.includes("farm"))
-    return `Stake ${money} in ${name} yield farms on ${chain}, compound the rewards weekly, and keep the principal deployed throughout.`;
-  if (c.includes("stak"))
-    return `Stake ${money} with ${name} on ${chain} through native delegation and leave the rewards compounding for the full period.`;
-  if (c.includes("stable") || c.includes("anchor") || c.includes("reserve") || c.includes("money") ||
-      c.includes("payment") || c.includes("card"))
-    return `Mint or hold ${money} of ${name} stable assets on ${chain} and place them in one listed pool so the balance counts as active.`;
-  if (c.includes("rwa") || c.includes("real") || c.includes("estate") || c.includes("treasur") || c.includes("credit"))
-    return `Buy ${money} of ${name} tokenized real-world assets on ${chain}, finish any verification early, and hold to the term.`;
-  if (c.includes("insur"))
-    return `Buy cover or underwrite ${money} through ${name} on ${chain} so the wallet is registered as a policyholder before any snapshot.`;
-  if (c.includes("oracle") || c.includes("infra") || c.includes("chain") || c.includes("depin") ||
-      c.includes("ai") || c.includes("privacy") || c.includes("govern") || c.includes("launchpad") ||
-      c.includes("locker") || c.includes("otc"))
-    return `Run ${money} of qualifying volume through ${name} on ${chain} as the docs describe and keep every transaction receipt.`;
-  if (c.includes("nft") || c.includes("gaming") || c.includes("collect"))
-    return `Mint or trade ${money} through ${name} on ${chain}, holding at least one qualifying asset in the farming wallet throughout.`;
-  return `Put ${money} to work in the main ${name} product on ${chain}, interacting with it directly rather than through an aggregator.`;
-}
-
-/** Short name for the weekly qualifying touch, one per protocol kind. */
-export function weeklyVerb(category: string | null): string {
-  const c = (category ?? "").toLowerCase();
-  if (c.includes("restak") || (c.includes("liquid") && c.includes("stak")))
-    return "restaking top-up";
-  if (c.includes("lend") || c.includes("cdp") || c.includes("collateral") || c.includes("borrow") ||
-      c.includes("uncollateralized") || c.includes("money market") || c.includes("cedefi"))
-    return "supply-and-borrow touch";
-  if (c.includes("dex") || c.includes("amm") || c.includes("liquidity manager") || c.includes("market maker"))
-    return "swap-or-liquidity touch";
-  if (c.includes("curator") || c.includes("aggregat") || c.includes("allocat") || c.includes("index") ||
-      c.includes("vault") || c.includes("manager"))
-    return "vault-deposit touch";
-  if (c.includes("bridge") || c.includes("canonical"))
-    return "bridging touch";
-  if (c.includes("perp") || c.includes("deriv") || c.includes("option") || c.includes("predict") ||
-      c.includes("synth") || c.includes("basis") || c.includes("leverag") || c.includes("future"))
-    return "hedged perp touch";
-  if (c.includes("yield") || c.includes("farm"))
-    return "stake-and-compound touch";
-  if (c.includes("stak"))
-    return "staking touch";
-  if (c.includes("stable") || c.includes("anchor") || c.includes("reserve") || c.includes("money") ||
-      c.includes("payment") || c.includes("card"))
-    return "mint-or-hold touch";
-  if (c.includes("rwa") || c.includes("real") || c.includes("estate") || c.includes("treasur") || c.includes("credit"))
-    return "position top-up";
-  if (c.includes("insur"))
-    return "coverage touch";
-  if (c.includes("nft") || c.includes("gaming") || c.includes("collect"))
-    return "mint-or-trade touch";
-  return "product touch";
-}
-
-/** Calendar date holdDays after asOf (YYYY-MM-DD); deterministic. */
-export function endDate(asOf: string, holdDays: number): string {
-  const t = Date.parse(`${asOf}T00:00:00Z`);
-  if (!Number.isFinite(t)) return `at least ${holdDays} days out`;
-  return new Date(t + holdDays * 86400000).toISOString().slice(0, 10);
-}
-
-export interface PlanCost {
-  capital_usd: number;
-  gas: { chain: string; units: number }[];
-  gas_total_units: number;
-  line: string;
-}
-
-/**
- * Explicit per-plan cost total: working capital plus summed gas units over
- * the protocol's chains. Gas stays in native units (no invented prices).
- */
-export function planCost(p: ProtocolInput): PlanCost {
-  const capital = capitalFor(p.tvl_usd);
-  const chains = p.chains.length > 0 ? p.chains : ["Ethereum"];
-  const gas = chains.map((chain) => ({ chain, units: gasFor(chain) }));
-  const total = gas.reduce((s, g) => s + g.units, 0);
-  const line =
-    `Plan cost total: about $${capital} working capital plus ${total} ` +
-    `summed gas units across ${chains.length} chain${chains.length === 1 ? "" : "s"} for fees.`;
-  return { capital_usd: capital, gas, gas_total_units: total, line };
-}
-
-/** Seven concrete farm steps for one protocol; each trims to 20-600 characters. */
-export function farmSteps(p: ProtocolInput, asOf = "2026-11-14"): string[] {
-  const first = p.chains[0] ?? "Ethereum";
-  const capital = capitalFor(p.tvl_usd);
-  const touch = Math.max(5, Math.round(capital / 10));
-  const age = ageDays(p.listed_at, asOf);
-  const hold = holdDaysFor(age);
-  const weeks = weeksFor(hold);
-  const verb = weeklyVerb(p.category);
-  const end = endDate(asOf, hold);
-  return [
-    `Open a fresh wallet used only for ${p.name} on ${first}; back up the seed phrase offline and never mix it with other farms.`,
-    `Fund it with ${moneyStr(capital)} for the position plus gas for fees, in a single transfer from an exchange. ${planCost(p).line}`,
-    actionFor(p.category, capital, first, p.name),
-    `Work a ${weeks}-week rotation on ${first}, one touch per week on different weekdays: (a) repeat the qualifying ${verb} above, (b) add a small about $${touch} top-up or swap, (c) open the points page with the farming wallet — then cycle.`,
-    `Leave the position working until at least ${end} (${hold} days from the ${asOf} snapshot); avoid early withdrawals since age and consistency are what a snapshot rewards.`,
-    `Every Monday, check the official ${p.name} points or rewards page with the farming wallet connected and confirm your balance accrues.`,
-    `Log every deposit, transaction hash and weekly check in a farm journal with screenshots so you can claim fast if a token is announced.`,
-  ];
-}
-
-function moneyStr(capital: number): string {
-  return `about $${capital}`;
+/** Snapshot-only checklist: product access and rewards must be verified before any spend. */
+export function farmSteps(p:ProtocolInput,asOf='2026-11-14'):string[]{
+ const capital=capitalFor(p.tvl_usd), chain=p.chains[0]??'a verified supported chain';
+ return [
+ `Before spending on ${p.name}, verify its official domain, docs, contracts, current token status, jurisdiction and rewards rules. The snapshot category (${p.category??'unknown'}) and chain list do not prove product capabilities or eligibility.`,
+ `Illustrative 30-day research pilot ${asOf} to ${endDate(asOf,30)}: allow 30 minutes for document checks, 20 for setup and 10 weekly for review (90 minutes total). These are planning assumptions, not protocol requirements.`,
+ `If official docs confirm a suitable low-risk action on ${chain}, use an isolated wallet, verify addresses and approvals, and test deposit AND withdrawal first. Do not assume lending, borrowing, points, staking, or any particular pool exists. Otherwise stop at research.`,
+ `${planCost(p).line} The $${capital} budget is an optional ceiling, not a recommendation to deploy; reduce it or skip the protocol if the verified minimum or costs do not fit.`,
+ `Only after a successful withdrawal test, consider one documented spot or deposit action within the budget. Avoid leverage and manufactured volume. Check smart-contract, depeg, liquidity, bridge and approval risks; all deployed capital can be lost.`,
+ `Review on ${endDate(asOf,7)}, ${endDate(asOf,14)}, ${endDate(asOf,21)} and ${endDate(asOf,28)}. Record balances and actual fees; repeat a transaction only for a genuine product need, not an assumed reward. Exit if risk or fees exceed your own limit.`,
+ `At ${endDate(asOf,30)}, reassess withdrawal access and net costs; keep receipts and revoke unnecessary approvals. No required holding period, points program, launch date or airdrop eligibility is verified here; rewards may be zero.`
+ ];
 }

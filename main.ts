@@ -10,7 +10,10 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, cpSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ageDays, compFor, farmSteps, fitComps, isRankable, planCost, scoreProtocol } from "./lib/model.ts";
+import { ageDays, farmSteps, isRankable, planCost } from "./lib/model.ts";
+import { benchmark,fitValue,predictValue } from "./lib/value.ts";
+import {calibrate,interval,assessIntervals,explain} from './lib/uncertainty.ts';
+import {researchReasons} from './lib/identity.ts';
 import { buildDossier } from "./vendor/makefun-board.ts";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -64,6 +67,7 @@ for (const p of snap.protocols) bySlug.set(p.slug, p);
 // pre-token below the floor (the early ones the radar exists to find).
 const watch = new Set<string>(snap.watchlist);
 const picked = new Map<string, SnapshotProtocol>();
+const research:any[]=[];
 for (const slug of snap.watchlist) {
   const p = bySlug.get(slug);
   if (!p) throw new Error(`boardIssue: watchlist slug ${slug} is not in the snapshot`);
@@ -73,45 +77,42 @@ for (const p of snap.protocols) {
   if (watch.has(p.slug)) continue;
   if (!isRankable(p)) continue;
   if (p.tvl_usd >= floor) continue;
+  const reasons=researchReasons(p,snap.protocols);
+  if(reasons.length){research.push({...p,token_status:'uncertain',reasons});continue;}
   picked.set(p.slug, p);
 }
 
 interface Scored {
   p: SnapshotProtocol;
   implied: number;
-  model: Record<string, number | string | null>;
+  model: Record<string, any>;
   age: number | null;
   steps: string[];
-  cost: { capital_usd: number; gas: { chain: string; units: number }[]; gas_total_units: number; line: string };
+  cost: ReturnType<typeof planCost>;
 }
 
-// Category comps fitted from the snapshot's own live-token protocols:
-// non-CEX protocols carrying both mcap_usd and tvl_usd.
-const fit = fitComps(
-  snap.protocols
-    .filter((p) => p.category !== "CEX" && p.mcap_usd !== null && p.tvl_usd !== null)
-    .map((p) => ({ category: p.category, mcap_usd: p.mcap_usd!, tvl_usd: p.tvl_usd })),
-);
-
+// Fit only positive, finite live-token market caps; the benchmark refits within each fold.
+const validation = benchmark(snap.protocols,asOf);
+const valueFit = fitValue(snap.protocols.filter(p=>p.category!=="CEX"),"robust",asOf);
+const calibration=calibrate(snap.protocols,asOf);
+const intervalValidation=assessIntervals(snap.protocols,asOf);
+const selected = validation.metrics.robust;
 const scored: Scored[] = [];
 for (const p of picked.values()) {
-  const comp = compFor(fit, p.category);
-  const m = scoreProtocol(p, asOf, comp.mult, comp.source);
+  const pred = predictValue(valueFit,p);
   scored.push({
     p,
-    implied: m.implied,
+    implied: pred.value,
     model: {
-      base: m.base,
-      compMult: m.compMult,
-      compSource: m.compSource,
-      growth: m.growth,
-      growthMult: m.growthMult,
-      maturity: m.maturity,
-      spread: m.spread,
-      velocity: m.velocity,
-      efficiency: m.efficiency,
+      base: p.tvl_usd*pred.mult,
+      compMult: pred.mult,
+      compSource: pred.source,
+      categoryLiveN: pred.n,
+      uncertainty: "80% nominal split-conformal reference range; live-token exchangeability only, not launch odds",
+      residual_interval: interval(calibration,p),
+      explanation: explain(valueFit,p,asOf),
     },
-    age: m.ageDays,
+    age: ageDays(p.listed_at,asOf),
     steps: farmSteps(p, asOf),
     cost: planCost(p),
   });
@@ -208,49 +209,53 @@ for (const d of ["dashboard", "screenshots"]) rmSync(join(outDir, d), { recursiv
 
 writeFileSync(join(outDir, "board.json"), JSON.stringify({ rows }) + "\n");
 
+writeFileSync(join(outDir,'research-universe.json'),JSON.stringify({policy:'Optional rows excluded from candidate ranking, not proven non-candidates',rows:research})+'\n');
+writeFileSync(join(outDir,"validation.json"),JSON.stringify(validation)+"\n");
 const payload = {
   meta: {
     as_of: asOf,
+    validation: {...validation,predictions:undefined},
+    regression: {beta:valueFit.beta,center:valueFit.center,scale:valueFit.scale},
+    uncertainty: {...calibration,fit:undefined,validation:{...intervalValidation,predictions:undefined}},
     floor_usd: floor,
     watchlist_total: snap.watchlist.length,
     watchlist_covered: snap.watchlist.length,
     rows_scored: rows.length,
     early_below_floor: earlyBelow,
+    research_held: research.length,
     live_set_aside: liveTotal,
     live_shown: live.length,
     model: {
-      formula: "implied = round(comp*tvl * (1+clamp(change_7d,0)/200) * maturity * spread * efficiency), comp = category median mcap/tvl over live non-CEX protocols, clamped to [0.05, 2.0], global median fallback",
+      formula: "implied = round(TVL * clamp(exp(beta dot standardized log-features),0.05,2))",
       base: "tvl_usd*compMult",
-      comp: "median(mcap_usd/tvl_usd) per category over live non-CEX protocols with both figures, clamped to [0.05, 2.0]; unseen categories use the global median",
-      fit_live_protocols: fit.liveCount,
-      fit_med_abs_log_err: fit.medAbsLogErr,
-      fit_method: fit.method,
-      fit_global_median: fit.global,
-      growth: "clamp(change_7d ?? 0,-60,120)",
-      growthMult: "1+growth/100*0.5",
-      maturity: "0.6+min(max(age_days ?? 365,0),1095)/1095*0.4",
-      spread: "1+0.05*min(chains.length,8)",
-      velocity: "tvl_usd/max(age_days ?? 365,30)",
-      efficiency: "0.9+0.2*clamp(log10(1+velocity/1e6)/2,0,1)",
+      comp: "Huber regression of log(mcap/TVL) using log TVL, bounded growth, log tracking age, log(1+chains); category not used",
+      fit_live_protocols: valueFit.n,
+      fit_med_abs_log_err: selected.median_abs_log_error,
+      fit_error_factor: selected.error_factor,
+      fit_method: "5-fold held-out Huber log regression, ridge 10, training-only scaling; exploratory model comparison",
+
+
     },
   },
   rows,
   live,
+  research,
 };
 writeFileSync(join(outDir, "data.js"), `window.RADAR = ${JSON.stringify(payload)};\n`);
+writeFileSync(join(outDir,'uncertainty-validation.json'),JSON.stringify(intervalValidation)+'\n');
 
 const dashSrc = join(ROOT, "dashboard");
 const shotsSrc = join(ROOT, "screenshots");
 if (!existsSync(join(dashSrc, "index.html"))) throw new Error("boardIssue: dashboard/index.html missing");
 cpSync(dashSrc, join(outDir, "dashboard"), { recursive: true });
 cpSync(shotsSrc, join(outDir, "screenshots"), { recursive: true });
+// Exact executable model/validation source for reproducibility, not judge instructions.
+for(const [name,source] of [['model-method.txt','lib/value.ts'],['uncertainty-method.txt','lib/uncertainty.ts'],['identity-method.txt','lib/identity.ts']]) writeFileSync(join(outDir,'dashboard',name),readFileSync(join(ROOT,source)));
+writeFileSync(join(outDir,'dashboard','validation-summary.json'),JSON.stringify({...validation,predictions:undefined}));
 
 writeFileSync(join(outDir, "dossier.json"), Buffer.from(buildDossier(outDir, { text_max_bytes: 65536 })));
 
 console.log(
   `radar: ${rows.length} rows (watchlist ${snap.watchlist.length}/${snap.watchlist.length}, early below floor ${earlyBelow}, live set aside ${liveTotal}) -> ${outDir}`,
 );
-console.log(
-  `comps: fitted over ${fit.liveCount} live protocols, global median ${fit.global.toFixed(4)}, ` +
-  `median |ln(pred/mcap)| leave-one-out ${fit.medAbsLogErr.toFixed(4)} (band [0.05, 2.0])`,
-);
+console.log(`validation: robust held-out median |ln(pred/mcap)| ${selected.median_abs_log_error.toFixed(4)}, factor ${selected.error_factor.toFixed(4)} over ${validation.live_count} live protocols`);

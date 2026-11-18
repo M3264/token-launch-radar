@@ -4,7 +4,7 @@
   var D = window.RADAR || { meta: {}, rows: [], live: [] };
   var meta = D.meta || {}, rows = D.rows || [], live = D.live || [];
   var bySlug = {};
-  rows.concat(live).forEach(function (r) { bySlug[r.slug] = r; });
+  rows.concat(live,D.research||[]).forEach(function (r) { bySlug[r.slug] = r; });
 
   var state = { tab: "pre", q: "", cat: "", sort: "rank", dir: 1, limit: 50, open: null };
 
@@ -32,20 +32,12 @@
     return v + "d";
   }
 
-  /* Same arithmetic as lib/model.ts scoreProtocol, run in-page per row. */
+  /* Independent standardized regression arithmetic from lib/value.ts predictValue, run in-page per row. */
   function recompute(r) {
-    var cm = (r.model && r.model.compMult) || 0.25;
-    var base = r.tvl_usd * cm;
-    var g = r.change_7d == null ? 0 : Math.min(120, Math.max(-60, r.change_7d));
-    var gm = 1 + (g / 100) * 0.5;
-    var a = r.age_days == null ? 365 : r.age_days;
-    a = Math.min(1095, Math.max(0, a));
-    var mat = 0.6 + (a / 1095) * 0.4;
-    var sp = 1 + 0.05 * Math.min(r.chains.length, 8);
-    var denom = Math.max(r.age_days == null ? 365 : r.age_days, 30);
-    var vel = r.tvl_usd / denom;
-    var eff = 0.9 + 0.2 * Math.min(1, Math.max(0, Math.log10(1 + vel / 1e6) / 2));
-    return Math.max(1, Math.round(base * gm * mat * sp * eff));
+    var f=meta.regression, a=r.age_days==null?365:Math.max(0,r.age_days);
+    var x=[Math.log(Math.max(1,r.tvl_usd)),Math.min(120,Math.max(-60,r.change_7d==null?0:r.change_7d))/100,Math.log(1+a),Math.log(1+r.chains.length)];
+    var log=f.beta[0];for(var j=0;j<4;j++)log+=f.beta[j+1]*(x[j]-f.center[j])/f.scale[j];
+    return Math.max(1,Math.round(r.tvl_usd*Math.min(2,Math.max(.05,Math.exp(log)))));
   }
   function valOf(r) { return state.tab === "pre" ? r.implied_value_usd : (r.mcap_usd == null ? -1 : r.mcap_usd); }
 
@@ -58,7 +50,7 @@
       if (key === "q") state.q = v;
       else if (key === "category") state.cat = v;
       else if (key === "p") state.open = v || null;
-      else if (key === "tab" && (v === "pre" || v === "live")) state.tab = v;
+      else if (key === "tab" && (v === "pre" || v === "live" || v === 'research')) state.tab = v;
     });
   }
   function writeHash() {
@@ -72,7 +64,7 @@
   }
 
   function current() {
-    var src = state.tab === "pre" ? rows : live;
+    var src = state.tab === 'research' ? (D.research||[]) : state.tab === "pre" ? rows : live;
     var q = state.q.trim().toLowerCase();
     var out = src.filter(function (r) {
       if (state.cat && (r.category || "Uncategorized") !== state.cat) return false;
@@ -98,7 +90,7 @@
 
   var COLS = [
     ["rank", "Rank"], ["name", "Protocol"], ["tvl", "TVL"],
-    ["change", "7d"], ["age", "Age"], ["comp", "Comp"], ["value", "Implied value"], ["status", "Status"],
+    ["change", "7d"], ["age", "Tracked"], ["comp", "Multiple"], ["value", "Implied value"], ["status", "Status"],
   ];
 
   function renderHead() {
@@ -129,7 +121,7 @@
       var w = Math.max(2, Math.round((v / max) * 120));
       var val = v < 0 ? "—" : usd(v) + '<span class="bar" style="width:' + w + 'px"></span>';
       var badge = state.tab === "pre"
-        ? '<span class="badge pre">pre-token</span>' : '<span class="badge live">live</span>';
+        ? '<span class="badge pre">pre-token</span>' : '<span class="badge live">'+(state.tab==='research'?'uncertain':'live')+'</span>';
       var rankCell = r.rank != null && r.rank <= 3 && state.tab === "pre"
         ? '<span class="medal m' + r.rank + '">' + r.rank + "</span>" : (r.rank || "—");
       return '<tr data-slug="' + esc(r.slug) + '"' + (state.open === r.slug ? ' class="sel"' : "") + '">' +
@@ -163,7 +155,7 @@
     var isPre = r.token_status === "pre-token" || r.implied_value_usd != null;
     var facts = fact("TVL", usd(r.tvl_usd)) +
       fact("7-day change", r.change_7d == null ? "n/a" : (r.change_7d > 0 ? "+" : "") + r.change_7d.toFixed(2) + "%") +
-      fact("Age, no token", r.age_days == null ? "unknown" : age(r.age_days)) +
+      fact("Tracking age", r.age_days == null ? "unknown" : age(r.age_days)) +
       fact("Chains", String(r.chains.length));
     var mid;
     if (isPre && r.implied_value_usd != null) {
@@ -178,21 +170,22 @@
         fact("chains (" + r.chains.length + ")", r.chains.join(", ")) + "</div>";
       if (r.model) {
         mid += "<h3>Derived factors</h3><div class=\"facts\">" +
-          fact("comp " + (r.category || "Uncategorized") + " ×",
+          fact("fitted mcap/TVL ×",
             Number(r.model.compMult).toFixed(4) + " · " + String(r.model.compSource || "")) +
           fact("base comp×TVL", usd(Math.round(r.model.base))) +
-          fact("growth mult", Number(r.model.growthMult).toFixed(3) + "×") +
-          fact("maturity", Number(r.model.maturity).toFixed(3) + "×") +
-          fact("spread", Number(r.model.spread).toFixed(3) + "×") +
-          fact("efficiency", Number(r.model.efficiency).toFixed(3) + "×") +
-          fact("implied", usd(r.implied_value_usd)) + "</div>";
+          fact("live peers in category", String(r.model.categoryLiveN)+"; category not used by regression") +
+          fact("implied scenario", usd(r.implied_value_usd)) + "</div>";
+        var u=r.model.residual_interval, e=r.model.explanation;
+        mid += '<h3>Residual-calibrated reference range</h3><p class="note">'+usd(u.lower_usd)+' – '+usd(u.upper_usd)+' · 80% nominal split-conformal range around a separate '+usd(u.reference_value_usd)+' reference fit. '+meta.uncertainty.calibration_n+' held-out calibration residuals; factor '+Number(meta.uncertainty.factor).toFixed(2)+'×. Outer live-token coverage '+meta.uncertainty.validation.covered+'/'+meta.uncertainty.validation.n+'. Not a confidence interval for the full-data board estimate; no guaranteed coverage for pre-token products, launches or wallet rewards.</p>';
+        mid += '<details><summary>Feature contributions and data-quality flags</summary><p>Intercept '+e.intercept.toFixed(3)+'; unclipped log multiple '+e.unclipped_log_multiple.toFixed(3)+'. Log contributions explain the model, not causal effects.</p><ul>'+e.terms.map(function(t){return '<li>'+esc(t.feature)+': '+t.log_contribution.toFixed(3)+' log units</li>';}).join('')+'</ul><ul>'+e.flags.map(function(f){return '<li>'+esc(f)+'</li>';}).join('')+'</ul></details>';
+        mid += '<p class="note">Not a token allocation, expected reward or launch likelihood. Tracking age is not token-free history.</p>';
       }
       if (r.plan_cost && r.plan_cost.line) {
         mid += '<div class="match ok">' + esc(r.plan_cost.line) + "</div>";
       }
-      mid += "<h3>Farm plan</h3><ol>" + r.farm_steps.map(function (s) { return "<li>" + esc(s) + "</li>"; }).join("") + "</ol>";
+      mid += "<h3>Conditional research pilot · verify before spending</h3><ol>" + r.farm_steps.map(function (s) { return "<li>" + esc(s) + "</li>"; }).join("") + "</ol>";
     } else {
-      mid = '<div class="match ok">token already trades — set aside for separation, no implied value</div>' +
+      mid = r.token_status==='uncertain' ? '<h3>Uncertain research universe · not ranked</h3><ul>'+r.reasons.map(function(reason){return '<li>'+esc(reason)+'</li>';}).join('')+'</ul><p>No independent token or farming eligibility verified. Exclusion is a conservative research policy, not proof.</p>' : '<div class="match ok">token recorded — set aside; trading not independently verified, no implied value</div>' +
         "<div class=\"facts\">" + fact("Market cap", r.mcap_usd == null ? "unreported" : usd(r.mcap_usd)) + "</div>";
     }
     d.innerHTML = '<button class="x">close ✕</button><h2>' + esc(r.name) + "</h2>" +
@@ -204,16 +197,12 @@
 
   function renderStatic() {
     var m = meta.model || {};
-    $("meta").textContent = "snapshot " + meta.as_of + " · floor " + usd(meta.floor_usd) +
-      " · model implied = round(comp·tvl·growth·maturity·spread·efficiency), comp fitted per category";
-    var fitTxt = (m.fit_med_abs_log_err != null ? Number(m.fit_med_abs_log_err).toFixed(3) : "n/a") +
-      " median |ln(pred/mcap)| over " + (m.fit_live_protocols != null ? m.fit_live_protocols : "?") + " live";
-    $("kpis").innerHTML =
-      fact("watchlist covered", meta.watchlist_covered + "/" + meta.watchlist_total) +
-      fact("protocols scored", String(meta.rows_scored)) +
-      fact("early finds below floor", String(meta.early_below_floor)) +
-      fact("live tokens set aside", String(meta.live_set_aside) + " (" + meta.live_shown + " shown)") +
-      fact("comp fit quality", fitTxt);
+    $("meta").textContent = "sealed snapshot " + meta.as_of + " · floor " + usd(meta.floor_usd) + " · not a live feed";
+    var b=meta.validation.metrics, metric=b.robust;
+    $("kpis").innerHTML = fact("watchlist covered",meta.watchlist_covered+"/"+meta.watchlist_total)+fact("protocols ranked",meta.rows_scored)+fact("early below floor",meta.early_below_floor)+fact("live set aside",meta.live_set_aside);
+    $("validation").innerHTML='<strong>Held-out validation · '+meta.validation.live_count+' live protocols · 5 deterministic folds</strong><br>'+Object.keys(b).map(function(k){return esc(k)+': '+b[k].median_abs_log_error.toFixed(3)+' log error / '+b[k].error_factor.toFixed(2)+'×';}).join(' · ')+'<br><span>Selected: robust log regression. Lower is better; error factor = exp(median |ln(pred/actual)|). Training-only fitting and scaling. Exploratory comparison, not an untouched test; no temporal or airdrop validation. Values are market-cap scenarios, not wallet payouts.</span>';
+    $('validation').innerHTML += '<br>Research holds: '+meta.research_held+' optional rows, excluded from ranking but not proven non-candidates. Token absence means snapshot fields only. <button id="researchOpen">View uncertain universe</button>';
+    $('researchOpen').onclick=function(){state.tab='research';state.q='';state.cat='';state.sort='name';state.dir=1;render();};
     var cats = {};
     rows.forEach(function (r) { cats[r.category || "Uncategorized"] = 1; });
     var sel = $("cat"), keep = state.cat;
@@ -221,17 +210,11 @@
       return '<option value="' + esc(c) + '">' + esc(c) + "</option>";
     }).join("");
     sel.value = keep;
-    $("formula").innerHTML = "implied = round(comp × tvl × <code>(1+g/200)</code> × " +
-      "<code>maturity</code> × <code>spread</code> × <code>efficiency</code>), strongest first. " +
-      "comp = this row's category median mcap/tvl over live tokens (global fallback), clamped [0.05, 2.0].";
-    var terms = [["comp", "category median mcap/tvl over live non-CEX, clamped [0.05, 2.0]; global median fallback"],
-      ["base", "tvl_usd × comp"], ["g", "clamp(change_7d ?? 0, −60, 120)"],
-      ["maturity", "0.6 + min(max(age ?? 365,0),1095)/1095 × 0.4"], ["spread", "1 + 0.05 × min(chains, 8)"],
-      ["velocity", "tvl / max(age ?? 365, 30)"], ["efficiency", "0.9 + 0.2 × clamp(log10(1+v/1e6)/2, 0, 1)"]];
-    $("terms").innerHTML = terms.map(function (t) { return "<dt>" + t[0] + "</dt><dd>" + esc(t[1]) + "</dd>"; }).join("");
-    $("fit").textContent = "Fit quality: " + fitTxt + " (leave-one-out; " +
-      (m.fit_method || "category median mcap/tvl") + "). Global fallback comp " +
-      (m.fit_global_median != null ? Number(m.fit_global_median).toFixed(4) : "n/a") + ", band [0.05, 2.0].";
+    $("formula").textContent = m.formula+". Huber regression predicts log(mcap/TVL); ridge penalty 10 on slopes, 30 IRLS iterations. Category is not used, so a single live peer cannot dictate a category multiple. No launch probability is estimated.";
+    var f=meta.regression;
+    var terms=[["features","log TVL; clamp(7d,-60,120)/100; log(1+tracking days); log(1+chains)"],["missing values","growth 0; tracking age 365 days; no evidence of token-free history"],["beta",f.beta.map(function(v){return v.toFixed(6);}).join(", ")],["training centers",f.center.map(function(v){return v.toFixed(6);}).join(", ")],["training scales",f.scale.map(function(v){return v.toFixed(6);}).join(", ")],["multiple band","[0.05,2.0] retained for identical comparison with baseline"],["uncertainty","large residual errors; market cap is not FDV, claim value, or expected reward"]];
+    $("terms").innerHTML=terms.map(function(t){return "<dt>"+esc(t[0])+"</dt><dd>"+esc(t[1])+"</dd>";}).join("");
+    $("fit").textContent = meta.validation.split+". "+meta.validation.limitations;
     $("foot").textContent = "token launch radar · snapshot " + meta.as_of + " · " + rows.length +
       " pre-token rows ranked strongest first · implied values are the entry's own claim, not financial advice";
   }

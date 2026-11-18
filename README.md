@@ -1,21 +1,31 @@
-[![token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/c/token-radar-01)
-[![rank](https://make.fun/badge/token-radar-01/M3264/token-launch-radar/rank.svg)](https://make.fun/c/token-radar-01)
-[![reward](https://make.fun/badge/token-radar-01/M3264/token-launch-radar/reward.svg)](https://make.fun/c/token-radar-01)
-
 # Token Launch Radar
 
-Bounty page: https://make.fun/bounty/token-radar-01
+An offline Node 22 entry for make.fun's `token-radar-01`. It reads the supplied snapshot, ranks pre-token research candidates, renders a searchable dashboard and builds the dossier with the unmodified kit vendor.
 
-Ranks every pre-token protocol in the sealed snapshot by an implied value derived from its own TVL, 7-day growth, age with no token, chain spread and deposit velocity — each row carrying a concrete 7-step farm plan with costs and holding times.
-
-## Run it
+## Run and verify
 
 ```sh
-MAKEFUN_OUTPUT_DIR=out node main.ts --input /path/to/snapshot.json
-node gate-check.cjs --input /path/to/snapshot.json --out out
+INPUT=/path/to/snapshot.json
+node main.ts --input "$INPUT" --output out
+npm test
+node gate-check.cjs --input "$INPUT" --out out
+node main.ts --input "$INPUT" --output out-repeat
 ```
 
-`main.ts` (Node 22, stdlib only, no network) scores the 40 watchlist protocols plus every rankable pre-token protocol below the $50M floor, writes `board.json` and `data.js`, copies `dashboard/` and `screenshots/`, and writes `dossier.json` via `vendor/makefun-board.ts`.
+Node 22 executes the TypeScript directly; no package installation, external API, network access or separate compilation is required. Generate `out` before running tests: the gate-mutation test deliberately modifies a temporary copy of the generated dashboard data. `nested.ts` and `lib/experimental-value.ts` support validation tests and are not production scoring dependencies.
 
----
-Built for the [token-radar-01 bounty](https://make.fun/c/token-radar-01) — referral: https://make.fun/r/mb0cqaeg
+Open `out/dashboard/index.html` to inspect the local dashboard. The entry writes `board.json`, `data.js`, `dossier.json`, validation reports and an unranked research universe. It copies the dashboard and three committed screenshots into the output directory. Generated outputs and development logs are not committed.
+
+## Model and uncertainty
+
+The point model is Huber regression of log market-cap/TVL on standardized log TVL, bounded growth, log tracking age and chain count. Its multiple is transparently clipped to [0.05, 2]. Training uses positive, finite live-token market caps and TVL, excluding CEX records. Deterministic held-out folds use training-only scaling; exact repeated CoinGecko IDs stay together. Nested validation and outer-target mutation tests guard against target leakage.
+
+The supplied snapshot produces 175 ranked rows: all 40 mandatory watchlist entries and 135 additional early candidates. Another 51 optional rows are held for uncertain wrapper or sibling identity, with explicit reasons rather than claims of proven common ownership. Null token fields do not establish token absence. Conservative rules cannot identify every possible wrapper or sibling.
+
+Split-conformal reference ranges describe live-token exchangeability, not launch odds or expected airdrop payout. The snapshot's 119 eligible live protocols yield exploratory held-out median absolute log error 1.2608 (factor 3.5284), not a temporal forecast or investment guarantee. Farm plans are conditional research pilots with illustrative capital, unquoted gas and no invented eligibility claims.
+
+## Reproducible dossier
+
+Generation copies the exact executable `lib/value.ts`, `lib/uncertainty.ts` and `lib/identity.ts` into the dossier's capped dashboard source alongside a freshly calculated validation summary. The gate independently recomputes every ranked value from emitted coefficients and checks full board/data agreement, watchlist coverage, output caps, screenshot dimensions and untruncated method visibility. The mutation test verifies that tampering with coefficients is rejected.
+
+The current snapshot passes all 13 Node tests and the output gate. Two generation runs were verified byte-identical across all 16 output files. These are local checks, not a server judge score or a claim of submission acceptance.

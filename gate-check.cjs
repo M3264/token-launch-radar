@@ -62,8 +62,8 @@ check("model-comp-band", compOk, "compMult in [0.05, 2.0] with source label");
 const costOk = rows.every((r) => r.plan_cost && typeof r.plan_cost.line === "string" &&
   r.plan_cost.line.trim().length >= 20 && r.plan_cost.line.trim().length <= 600 &&
   /capital/i.test(r.plan_cost.line) && /gas/i.test(r.plan_cost.line) &&
-  Number.isFinite(r.plan_cost.capital_usd) && Number.isFinite(r.plan_cost.gas_total_units));
-check("plan-cost-total", costOk, "explicit capital+gas cost line per plan");
+  Number.isFinite(r.plan_cost.capital_usd) && r.plan_cost.gas_total_units === null);
+check("plan-budget-fees-unknown", costOk, "illustrative capital, unquoted gas; no invalid native-unit total");
 
 // --- file caps ---
 const boardBytes = fs.statSync(path.join(outDir, "board.json")).size;
@@ -94,11 +94,12 @@ for (const f of dashFiles) dashBytes += fs.statSync(path.join(dashDir, f)).size;
 check("dashboard-total-<=4MiB", dashBytes <= 4 * 1024 * 1024, `${dashFiles.length} files, ${dashBytes} bytes`);
 numbers.dashboard_files = dashFiles.length;
 numbers.dashboard_bytes = dashBytes;
-const srcFiles = dashFiles.filter((f) => /\.(html|css|js)$/.test(f));
+const srcFiles = dashFiles.filter((f) => /\.(html|css|js|json|mjs|svg|md|txt)$/.test(f));
 let srcBytes = 0;
 for (const f of srcFiles) srcBytes += fs.statSync(path.join(dashDir, f)).size;
 check("dashboard-source-<=65536", srcBytes <= 65536, `${srcBytes} bytes`);
 numbers.dashboard_source_bytes = srcBytes;
+check("dossier-text-untruncated", Buffer.byteLength(dossier.text)<=65536 && !dossier.text.includes("[Cut at ") && dossier.text.includes("export function fitValue") && dossier.text.includes("export function benchmark"), `${Buffer.byteLength(dossier.text)} text bytes; executable method and validation visible`);
 check("dashboard-has-shell", dashFiles.includes("index.html") && dashFiles.some((f) => f.endsWith(".css")) && dashFiles.some((f) => f.endsWith(".js")), srcFiles.join(","));
 const nameOk = dashFiles.every((f) => f.split("/").every((seg, i) =>
   (i < f.split("/").length - 1 ? !seg.startsWith(".") : true) && /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/.test(seg)));
@@ -176,8 +177,7 @@ const m = dataJs.match(/window\.RADAR\s*=\s*(\{[\s\S]*\});?\s*$/);
 check("data.js-parse", !!m, `${dataJs.length} bytes`);
 if (m) {
   const data = JSON.parse(m[1]);
-  check("data.js-rows-match", Array.isArray(data.rows) && data.rows.length === rows.length &&
-    data.rows[0].slug === byRank[0].slug && data.rows[0].implied_value_usd === byRank[0].implied_value_usd,
+  check("data.js-rows-match", Array.isArray(data.rows) && data.rows.length === rows.length && JSON.stringify(data.rows)===JSON.stringify(rows),
     `${data.rows.length} rows, rank1=${data.rows[0] && data.rows[0].slug}`);
   check("data.js-live-24", Array.isArray(data.live) && data.live.length <= 24 && data.live.length > 0,
     `${data.live.length} live`);
@@ -191,21 +191,17 @@ if (m) {
 }
 
 // --- in-page recompute equality on sampled rows ---
+const reg=m?JSON.parse(m[1]).meta?.regression:null;
 function recompute(r) {
-  const cm = (r.model && r.model.compMult) || 0.25;
-  const base = r.tvl_usd * cm;
-  const g = r.change_7d == null ? 0 : Math.min(120, Math.max(-60, r.change_7d));
-  const gm = 1 + g / 100 * 0.5;
-  const a = Math.min(1095, Math.max(0, r.age_days == null ? 365 : r.age_days));
-  const mat = 0.6 + (a / 1095) * 0.4;
-  const sp = 1 + 0.05 * Math.min(r.chains.length, 8);
-  const denom = Math.max(r.age_days == null ? 365 : r.age_days, 30);
-  const vel = r.tvl_usd / denom;
-  const eff = 0.9 + 0.2 * Math.min(1, Math.max(0, Math.log10(1 + vel / 1e6) / 2));
-  return Math.max(1, Math.round(base * gm * mat * sp * eff));
+  if(!reg || reg.beta?.length!==5 || reg.center?.length!==4 || reg.scale?.length!==4 || ![...reg.beta,...reg.center,...reg.scale].every(Number.isFinite) || !reg.scale.every(s=>s>0)) return NaN;
+  // Independently derive age from snapshot dates, not saved model factors.
+  const age=r.listed_at==null?365:Math.floor((Date.parse(snap.as_of+'T00:00:00Z')-Date.parse(r.listed_at+'T00:00:00Z'))/86400000);
+  const a=Number.isFinite(age)?Math.max(0,age):365;
+  const x=[Math.log(Math.max(1,r.tvl_usd)),Math.min(120,Math.max(-60,r.change_7d??0))/100,Math.log1p(a),Math.log1p(r.chains.length)];
+  let log=reg.beta[0];for(let j=0;j<4;j++)log+=reg.beta[j+1]*(x[j]-reg.center[j])/reg.scale[j];
+  return Math.max(1,Math.round(r.tvl_usd*Math.min(2,Math.max(.05,Math.exp(log)))));
 }
-const sampleIdx = new Set([0, rows.length - 1]);
-for (let i = 0; i < 25; i++) sampleIdx.add(Math.floor((i * rows.length) / 25));
+const sampleIdx = new Set(rows.map((_,i)=>i));
 let matched = 0;
 let mismatched = 0;
 for (const i of [...sampleIdx].sort((a, b) => a - b)) {
@@ -217,4 +213,4 @@ check("recompute-sampled", mismatched === 0, `${matched} sampled rows equal`);
 numbers.recomputed = matched;
 
 console.log(`\nGATE ${failures.length === 0 ? "GREEN" : "RED"} ${JSON.stringify(numbers)}`);
-if (failures.length) { console.log(`failed: ${failures.join(", ")}`); process.exit(1); }
+if (failures.length) { console.log(`failed: ${failures.join(", ")}`); process.exitCode = 1; }
